@@ -1,0 +1,57 @@
+name: Value Bet Alerts
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 10 minutes, offset from the top of the hour to reduce delay risk.
+    - cron: "7,17,27,37,47,57 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  run-alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Ensure state file exists
+        run: |
+          if [ ! -f .seen_value_bets.json ]; then
+            printf '[]\n' > .seen_value_bets.json
+          fi
+
+      - name: Run alert script
+        env:
+          ODDS_API_IO_KEY: ${{ secrets.ODDS_API_IO_KEY }}
+          ODDS_API_BOOKMAKER: ${{ secrets.ODDS_API_BOOKMAKER }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MIN_EXPECTED_VALUE: ${{ vars.MIN_EXPECTED_VALUE || '0.05' }}
+          POLL_INTERVAL_SECONDS: "600"
+          MAX_REQUESTS_PER_HOUR: "100"
+          BANKROLL: ${{ vars.BANKROLL || '0' }}
+          BANKROLL_CURRENCY: ${{ vars.BANKROLL_CURRENCY || 'EUR' }}
+          STATE_FILE: .seen_value_bets.json
+        run: python3 value_bet_alerts.py --once
+
+      - name: Commit updated state
+        run: |
+          if git diff --quiet -- .seen_value_bets.json; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f .seen_value_bets.json
+          git commit -m "chore: update seen value bets"
+          git push

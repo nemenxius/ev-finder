@@ -1,0 +1,4 @@
+.env
+.seen_value_bets.json
+__pycache__/
+deploy/*.log
