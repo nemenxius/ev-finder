@@ -26,7 +26,7 @@ jobs:
       - name: Ensure state file exists
         run: |
           if [ ! -f .seen_value_bets.json ]; then
-            printf '[]\n' > .seen_value_bets.json
+            printf '{}\n' > .seen_value_bets.json
           fi
 
       - name: Run alert script

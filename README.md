@@ -6,7 +6,7 @@ Simple Python monitor for Odds-API.io value bets with Telegram alerts.
 
 - Fetches value bets from `https://api.odds-api.io/v3/value-bets`
 - Filters for bets with expected value greater than or equal to `5%`
-- Sends Telegram alerts only for bets that have not already been sent
+- Sends Telegram alerts only for bets that have not already been sent with the same odds, EV, and line
 - Includes a suggested stake using the `ev-calculator` quarter-Kelly logic
 
 ## Configuration
@@ -61,38 +61,13 @@ Multiple bookmakers:
 python3 value_bet_alerts.py --bookmakers "Bet365,Pinnacle,Unibet"
 ```
 
-The script stores previously alerted value bet IDs in `.seen_value_bets.json` so it does not re-send duplicates on restart.
+The script stores alert state in `.seen_value_bets.json` so it does not re-send duplicates on restart. A bet is treated as a duplicate when the same market for the same event/bookmaker has the same odds, EV, and line as a previously sent alert.
 
 ## Running continuously
 
-There are two practical free options included in this repo.
+The repo includes a GitHub Actions scheduler for persistent alert state across runs.
 
-### Option 1: Your Mac via `launchd`
-
-Best if you want true continuous running with persistent local state.
-
-Files:
-
-- `deploy/run_value_bet_alerts.sh`
-- `deploy/com.evfinder.value-bet-alerts.plist`
-
-Install:
-
-```bash
-chmod +x deploy/run_value_bet_alerts.sh
-cp deploy/com.evfinder.value-bet-alerts.plist ~/Library/LaunchAgents/
-launchctl unload ~/Library/LaunchAgents/com.evfinder.value-bet-alerts.plist 2>/dev/null || true
-launchctl load ~/Library/LaunchAgents/com.evfinder.value-bet-alerts.plist
-```
-
-Logs:
-
-- `deploy/value-bet-alerts.log`
-- `deploy/value-bet-alerts.error.log`
-
-This is the most reliable free option if your Mac stays on.
-
-### Option 2: GitHub Actions scheduler
+### GitHub Actions scheduler
 
 Workflow file:
 

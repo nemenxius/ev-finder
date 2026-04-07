@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from math import ceil
 from html import escape
 from pathlib import Path
@@ -19,6 +20,7 @@ DEFAULT_MIN_EV = 0.05
 DEFAULT_POLL_INTERVAL = 60
 DEFAULT_STATE_FILE = ".seen_value_bets.json"
 DEFAULT_MAX_REQUESTS_PER_HOUR = 100
+STATE_VERSION = 2
 
 
 def round_to_step(value: float, step: float) -> float:
@@ -166,24 +168,57 @@ def validate_polling_budget(args: argparse.Namespace, bookmakers: list[str]) -> 
         )
 
 
-def load_seen_ids(path: Path) -> set[str]:
+def load_alert_state(path: Path) -> tuple[set[str], dict[str, dict[str, Any]]]:
     if not path.exists():
-        return set()
+        return set(), {}
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return set()
+        return set(), {}
 
-    if not isinstance(data, list):
-        return set()
+    if isinstance(data, list):
+        return {item for item in data if isinstance(item, str)}, {}
 
-    return {item for item in data if isinstance(item, str)}
+    if not isinstance(data, dict):
+        return set(), {}
+
+    seen_ids_raw = data.get("seen_ids")
+    seen_ids = (
+        {item for item in seen_ids_raw if isinstance(item, str)}
+        if isinstance(seen_ids_raw, list)
+        else set()
+    )
+
+    sent_alerts_raw = data.get("sent_alerts")
+    sent_alerts = (
+        {
+            key: value
+            for key, value in sent_alerts_raw.items()
+            if isinstance(key, str) and isinstance(value, dict)
+        }
+        if isinstance(sent_alerts_raw, dict)
+        else {}
+    )
+
+    return seen_ids, sent_alerts
 
 
-def save_seen_ids(path: Path, seen_ids: set[str]) -> None:
+def save_alert_state(
+    path: Path,
+    seen_ids: set[str],
+    sent_alerts: dict[str, dict[str, Any]],
+) -> None:
     path.write_text(
-        json.dumps(sorted(seen_ids), indent=2),
+        json.dumps(
+            {
+                "version": STATE_VERSION,
+                "seen_ids": sorted(seen_ids),
+                "sent_alerts": sent_alerts,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 
@@ -322,6 +357,44 @@ def format_ev_percent(expected_value: Any) -> str:
     if percent is None:
         return "N/A"
     return f"{percent:.2f}%"
+
+
+def format_comparable_number(value: Any, decimals: int) -> str:
+    numeric = parse_float(value)
+    if numeric is None:
+        return str(value or "")
+    return f"{numeric:.{decimals}f}"
+
+
+def build_alert_fingerprint(bet: dict[str, Any]) -> str:
+    event = bet.get("event") if isinstance(bet.get("event"), dict) else {}
+    market = bet.get("market") if isinstance(bet.get("market"), dict) else {}
+
+    components = [
+        str(bet.get("bookmaker", "")),
+        str(event.get("sport", "")),
+        str(event.get("league", "")),
+        str(event.get("home", "")),
+        str(event.get("away", "")),
+        str(event.get("date", "")),
+        str(market.get("name", bet.get("market", ""))),
+        str(bet.get("betSide", "")),
+        format_comparable_number(get_bet_odds(bet), 4),
+        format_comparable_number(normalize_ev_percent(bet.get("expectedValue")), 2),
+        format_comparable_number(get_market_line(bet), 4),
+    ]
+    return "|".join(components)
+
+
+def build_alert_state_entry(bet: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "bet_id": str(bet.get("id", "")),
+        "bookmaker": str(bet.get("bookmaker", "")),
+        "odds": format_comparable_number(get_bet_odds(bet), 4),
+        "ev_percent": format_comparable_number(normalize_ev_percent(bet.get("expectedValue")), 2),
+        "line": format_comparable_number(get_market_line(bet), 4),
+        "sent_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def describe_bet(bet: dict[str, Any]) -> str:
@@ -561,17 +634,21 @@ def filter_new_value_bets(
     bets: list[dict[str, Any]],
     min_ev: float,
     seen_ids: set[str],
+    sent_alerts: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     new_bets: list[dict[str, Any]] = []
 
     for bet in bets:
         bet_id = bet.get("id")
+        alert_fingerprint = build_alert_fingerprint(bet)
         ev_percent = normalize_ev_percent(bet.get("expectedValue"))
         threshold_percent = min_ev * 100 if min_ev <= 1 else min_ev
 
         if ev_percent is None or ev_percent < threshold_percent:
             continue
-        if not isinstance(bet_id, str) or bet_id in seen_ids:
+        if alert_fingerprint in sent_alerts:
+            continue
+        if isinstance(bet_id, str) and bet_id in seen_ids:
             continue
 
         new_bets.append(bet)
@@ -583,14 +660,18 @@ def filter_new_value_bets(
     )
 
 
-def run_check(args: argparse.Namespace, seen_ids: set[str]) -> int:
+def run_check(
+    args: argparse.Namespace,
+    seen_ids: set[str],
+    sent_alerts: dict[str, dict[str, Any]],
+) -> int:
     bookmakers = get_bookmakers(args.bookmakers)
     alerts_sent = 0
 
     for bookmaker in bookmakers:
         try:
             bets = fetch_value_bets(args.api_key, bookmaker)
-            new_bets = filter_new_value_bets(bets, args.min_ev, seen_ids)
+            new_bets = filter_new_value_bets(bets, args.min_ev, seen_ids, sent_alerts)
         except (RuntimeError, URLError, ValueError, json.JSONDecodeError) as exc:
             print(f"[error] Failed to fetch value bets for {bookmaker}: {exc}", file=sys.stderr)
             continue
@@ -599,7 +680,8 @@ def run_check(args: argparse.Namespace, seen_ids: set[str]) -> int:
             print(f"[info] No new value bets above threshold for {bookmaker}")
 
         for bet in new_bets:
-            bet_id = bet["id"]
+            bet_id = str(bet.get("id", "unknown"))
+            alert_fingerprint = build_alert_fingerprint(bet)
             try:
                 send_telegram_alert(
                     args.telegram_bot_token,
@@ -609,6 +691,7 @@ def run_check(args: argparse.Namespace, seen_ids: set[str]) -> int:
                     args.bankroll_currency,
                 )
                 seen_ids.add(bet_id)
+                sent_alerts[alert_fingerprint] = build_alert_state_entry(bet)
                 alerts_sent += 1
                 print(
                     f"[alert] Sent {bet_id} ({format_ev_percent(bet.get('expectedValue'))} EV) for {bookmaker}"
@@ -636,11 +719,14 @@ def main() -> int:
         return 0
 
     state_path = Path(args.state_file)
-    seen_ids = set() if args.ignore_state else load_seen_ids(state_path)
+    if args.ignore_state:
+        seen_ids, sent_alerts = set(), {}
+    else:
+        seen_ids, sent_alerts = load_alert_state(state_path)
 
     while True:
-        run_check(args, seen_ids)
-        save_seen_ids(state_path, seen_ids)
+        run_check(args, seen_ids, sent_alerts)
+        save_alert_state(state_path, seen_ids, sent_alerts)
 
         if args.once:
             return 0
