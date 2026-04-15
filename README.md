@@ -1,13 +1,14 @@
 # EVFinder
 
-Simple Python monitor for Odds-API.io value bets with Telegram alerts.
+Simple Python monitor for Odds-API.io and Surebet.com value bets with Telegram alerts.
 
 ## What it does
 
 - Fetches value bets from `https://api.odds-api.io/v3/value-bets`
-- Filters for bets with expected value greater than or equal to `5%`
-- Sends Telegram alerts only for bets that have not already been sent with the same odds, EV, and line
-- Includes a suggested stake using the `ev-calculator` quarter-Kelly logic
+- Optionally logs into `https://en.surebet.com` and scrapes `/valuebets`
+- Filters each source with its own thresholds
+- Sends Telegram alerts only for bets that have not already been sent with the same fingerprint
+- Includes a suggested stake using the `ev-calculator` quarter-Kelly logic for Odds-API alerts
 
 ## Configuration
 
@@ -29,14 +30,33 @@ Then set:
 Optional:
 
 - `MIN_EXPECTED_VALUE=0.05`
+- `MIN_BET_ODDS=1.40`
 - `POLL_INTERVAL_SECONDS=60`
 - `MAX_REQUESTS_PER_HOUR=100`
+- `ODDS_API_MAX_RETRIES=3`
+- `RATE_LIMIT_WARN_THRESHOLD=10`
 - `BANKROLL=1000`
 - `BANKROLL_CURRENCY=EUR`
+- `ENABLE_ODDS_API_SOURCE=1`
+- `ENABLE_SUREBET_SOURCE=0`
 - `STATE_FILE=.seen_value_bets.json`
+- `ALERT_ARCHIVE_FILE=logs/sent_alerts.jsonl`
 - `MONGODB_URI`
 - `MONGODB_DATABASE=evfinder`
 - `MONGODB_COLLECTION=sent_alerts`
+- `SUREBET_USERNAME`
+- `SUREBET_PASSWORD`
+- `SUREBET_BASE_URL=https://en.surebet.com`
+- `SCRAPED_MIN_EXPECTED_VALUE=2.0`
+- `SCRAPED_MIN_BET_ODDS=1.50`
+- `SCRAPED_MIN_PROBABILITY=0.35`
+- `SUREBET_BROWSER_HEADLESS=1`
+- `SUREBET_BROWSER_BINARY=`
+- `SUREBET_BROWSER_LOGIN_TIMEOUT_SECONDS=20`
+- `CA_BUNDLE=/path/to/custom-ca.pem`
+- `TELEGRAM_CA_BUNDLE=/path/to/custom-ca.pem`
+- `ODDS_API_CA_BUNDLE=/path/to/custom-ca.pem`
+- `TELEGRAM_ALLOW_INSECURE_TLS=0`
 
 For a 100 requests/hour plan, `60` seconds is a safe default for one bookmaker. If you monitor multiple bookmakers, the script will stop and tell you the minimum safe interval instead of silently exceeding the budget. For example, `2` bookmakers requires at least `72` seconds.
 
@@ -64,11 +84,49 @@ Multiple bookmakers:
 python3 value_bet_alerts.py --bookmakers "Bet365,Pinnacle,Unibet"
 ```
 
+Surebet-only run:
+
+```bash
+export ENABLE_ODDS_API_SOURCE=0
+export ENABLE_SUREBET_SOURCE=1
+export SUREBET_USERNAME=your_email
+export SUREBET_PASSWORD=your_password
+python3 value_bet_alerts.py --once
+```
+
+Combined run:
+
+```bash
+export ENABLE_ODDS_API_SOURCE=1
+export ENABLE_SUREBET_SOURCE=1
+python3 value_bet_alerts.py
+```
+
 The script stores alert state in `.seen_value_bets.json` so it does not re-send duplicates on restart. A bet is treated as a duplicate when the same market for the same event/bookmaker has the same odds, EV, and line as a previously sent alert.
+
+When the Surebet source is enabled, alerts are deduplicated by a source-aware fingerprint so the same scraped row can alert again if the odds or EV changes materially.
 
 `TELEGRAM_CHAT_TARGET` can be either a numeric chat ID or an `@channel_username` style target where Telegram accepts usernames. The script still supports the older `TELEGRAM_CHAT_ID` name for backward compatibility.
 
-If `MONGODB_URI` is set, the script stores duplicate-alert state in MongoDB instead of the local JSON file. This is the recommended setup if you want durable shared state across restarts or future multi-machine runs.
+If `MONGODB_URI` is set, the script stores duplicate-alert state in MongoDB instead of the local JSON file. After a successful Telegram send, MongoDB also stores the Telegram target, the exact HTML message that was sent, and the raw bet object returned by the API. This is the recommended setup if you want durable shared state across restarts or future multi-machine runs.
+
+The Surebet source uses an authenticated HTTP session that logs into `en.surebet.com/users/sign_in` and reuses the session across polling cycles. The browser-related env vars are kept for compatibility with the Java reference project, but the Python implementation does not launch Selenium in this version.
+
+Successful Telegram alerts are also appended to `ALERT_ARCHIVE_FILE` as JSON Lines. Each line includes the UTC send time, the bet ID, the alert fingerprint, the Telegram target, the exact HTML message that was sent, and the raw bet object returned by the API for that alert.
+
+### TLS and certificate errors
+
+If you see an error like `CERTIFICATE_VERIFY_FAILED` with `self-signed certificate in certificate chain`, your machine is usually behind a proxy, antivirus HTTPS inspection layer, or company root CA that Python does not trust yet.
+
+Preferred fix:
+
+- export the intercepting root certificate as PEM
+- set `TELEGRAM_CA_BUNDLE` to that PEM path if only Telegram fails
+- or set `CA_BUNDLE` to use the same PEM for all outbound HTTPS requests
+
+The script also respects `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, and `CURL_CA_BUNDLE` if you already use one of those environment variables elsewhere.
+
+As a temporary last resort, you can set `TELEGRAM_ALLOW_INSECURE_TLS=1` to disable certificate verification for Telegram requests only. This is intentionally opt-in and not recommended for normal use.
 
 ## Running continuously
 
@@ -108,6 +166,10 @@ run_value_bet_alerts.bat
 ```
 
 The launcher writes output to `logs\value_bet_alerts.log`.
+
+Each log line is timestamped by the Python process, so both normal output and errors are easier to trace when the script is running continuously.
+
+For Odds-API requests, the script also logs rate-limit headers when available, including remaining requests and reset information. If the API returns `429 Too Many Requests`, the script backs off and retries up to `ODDS_API_MAX_RETRIES` times without making any extra validation calls.
 
 ### MongoDB behavior
 
