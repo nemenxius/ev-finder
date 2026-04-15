@@ -62,22 +62,8 @@ SUREBET_HTML = """
 
 
 class ValueBetAlertsTests(unittest.TestCase):
-    def test_parse_surebet_valuebets_html_extracts_reference_fields(self) -> None:
-        rows = MODULE.parse_surebet_valuebets_html(SUREBET_HTML)
-
-        self.assertEqual(2, len(rows))
-        self.assertEqual("vb_123", rows[0]["row_id"])
-        self.assertEqual("Betano", rows[0]["bookmaker"])
-        self.assertEqual("Football", rows[0]["sport"])
-        self.assertEqual("Benfica vs Porto", rows[0]["event"])
-        self.assertEqual("Primeira Liga", rows[0]["tournament"])
-        self.assertEqual("Over 2.5", rows[0]["market"])
-        self.assertEqual("2.05", rows[0]["odds"])
-        self.assertEqual("68.00%", rows[0]["probability"])
-        self.assertEqual("102.40%", rows[0]["overvalue"])
-
-    def test_normalize_odds_api_candidate_preserves_existing_ev_shape(self) -> None:
-        raw = {
+    def make_odds_api_raw_bet(self) -> dict:
+        return {
             "id": "bet_1",
             "bookmaker": "Betano PT",
             "betSide": "home",
@@ -100,6 +86,23 @@ class ValueBetAlertsTests(unittest.TestCase):
             },
         }
 
+    def test_parse_surebet_valuebets_html_extracts_reference_fields(self) -> None:
+        rows = MODULE.parse_surebet_valuebets_html(SUREBET_HTML)
+
+        self.assertEqual(2, len(rows))
+        self.assertEqual("vb_123", rows[0]["row_id"])
+        self.assertEqual("Betano", rows[0]["bookmaker"])
+        self.assertEqual("Football", rows[0]["sport"])
+        self.assertEqual("Benfica vs Porto", rows[0]["event"])
+        self.assertEqual("Primeira Liga", rows[0]["tournament"])
+        self.assertEqual("Over 2.5", rows[0]["market"])
+        self.assertEqual("2.05", rows[0]["odds"])
+        self.assertEqual("68.00%", rows[0]["probability"])
+        self.assertEqual("102.40%", rows[0]["overvalue"])
+
+    def test_normalize_odds_api_candidate_preserves_existing_ev_shape(self) -> None:
+        raw = self.make_odds_api_raw_bet()
+
         candidate = MODULE.normalize_odds_api_candidate(raw)
 
         self.assertEqual(MODULE.ODDS_API_SOURCE, candidate.source)
@@ -107,6 +110,38 @@ class ValueBetAlertsTests(unittest.TestCase):
         self.assertEqual(2.1, candidate.odds)
         self.assertAlmostEqual(5.2, candidate.ev_percent, places=2)
         self.assertEqual("Benfica vs Porto", candidate.event_label)
+
+    def test_file_alert_store_dedupes_odds_api_same_match_context_even_if_ev_changes(self) -> None:
+        raw_one = self.make_odds_api_raw_bet()
+        raw_two = self.make_odds_api_raw_bet()
+        raw_two["id"] = "bet_2"
+        raw_two["expectedValue"] = 107.9
+
+        candidate_one = MODULE.normalize_odds_api_candidate(raw_one)
+        candidate_two = MODULE.normalize_odds_api_candidate(raw_two)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MODULE.FileAlertStore(Path(temp_dir) / "state.json")
+
+            self.assertTrue(store.reserve_alert(candidate_one))
+            store.mark_sent(candidate_one, chat_target="chat", message="msg")
+            self.assertFalse(store.reserve_alert(candidate_two))
+
+    def test_file_alert_store_allows_new_odds_api_alert_when_bet_odds_change(self) -> None:
+        raw_one = self.make_odds_api_raw_bet()
+        raw_two = self.make_odds_api_raw_bet()
+        raw_two["id"] = "bet_2"
+        raw_two["bookmakerOdds"]["home"] = 2.2
+
+        candidate_one = MODULE.normalize_odds_api_candidate(raw_one)
+        candidate_two = MODULE.normalize_odds_api_candidate(raw_two)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MODULE.FileAlertStore(Path(temp_dir) / "state.json")
+
+            self.assertTrue(store.reserve_alert(candidate_one))
+            store.mark_sent(candidate_one, chat_target="chat", message="msg")
+            self.assertTrue(store.reserve_alert(candidate_two))
 
     def test_filter_candidates_applies_scraped_thresholds(self) -> None:
         rows = MODULE.parse_surebet_valuebets_html(SUREBET_HTML)

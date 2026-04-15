@@ -1490,6 +1490,20 @@ def build_alert_fingerprint(candidate: NormalizedAlertCandidate) -> str:
                 candidate.event_label.strip(),
             ]
         )
+    if candidate.source == ODDS_API_SOURCE:
+        return "|".join(
+            [
+                candidate.source,
+                candidate.kind,
+                candidate.bookmaker.strip(),
+                candidate.sport.strip(),
+                candidate.tournament.strip(),
+                candidate.event_label.strip(),
+                candidate.start_time.strip(),
+                candidate.market_label.strip(),
+                format_comparable_number(candidate.odds, 4),
+            ]
+        )
 
     components = [
         candidate.source,
