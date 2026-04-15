@@ -154,12 +154,29 @@ class ValueBetAlertsTests(unittest.TestCase):
             MODULE.build_alert_fingerprint(odds_candidate),
         )
 
-    def test_file_alert_store_allows_same_row_id_when_fingerprint_changes(self) -> None:
+    def test_file_alert_store_dedupes_surebet_same_sport_tournament_and_event(self) -> None:
         row = MODULE.parse_surebet_valuebets_html(SUREBET_HTML)[0]
         candidate_one = MODULE.normalize_surebet_candidate(row, "https://en.surebet.com")
         row_changed = dict(row)
+        row_changed["row_id"] = "vb_999"
         row_changed["overvalue"] = "103.10%"
+        row_changed["odds"] = "2.20"
         candidate_two = MODULE.normalize_surebet_candidate(row_changed, "https://en.surebet.com")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = MODULE.FileAlertStore(Path(temp_dir) / "state.json")
+
+            self.assertTrue(store.reserve_alert(candidate_one))
+            store.mark_sent(candidate_one, chat_target="chat", message="msg")
+            self.assertFalse(store.reserve_alert(candidate_two))
+
+    def test_file_alert_store_allows_new_surebet_when_match_changes(self) -> None:
+        row = MODULE.parse_surebet_valuebets_html(SUREBET_HTML)[0]
+        candidate_one = MODULE.normalize_surebet_candidate(row, "https://en.surebet.com")
+        different_match = dict(row)
+        different_match["row_id"] = "vb_777"
+        different_match["event"] = "Sporting vs Braga"
+        candidate_two = MODULE.normalize_surebet_candidate(different_match, "https://en.surebet.com")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             store = MODULE.FileAlertStore(Path(temp_dir) / "state.json")

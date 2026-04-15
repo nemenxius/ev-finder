@@ -1480,6 +1480,17 @@ class AlertStore(ABC):
 
 
 def build_alert_fingerprint(candidate: NormalizedAlertCandidate) -> str:
+    if candidate.source == SUREBET_SOURCE:
+        return "|".join(
+            [
+                candidate.source,
+                candidate.kind,
+                candidate.sport.strip(),
+                candidate.tournament.strip(),
+                candidate.event_label.strip(),
+            ]
+        )
+
     components = [
         candidate.source,
         candidate.kind,
