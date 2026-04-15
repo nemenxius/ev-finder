@@ -1,3 +1,5 @@
 .env
 .seen_value_bets.json
 __pycache__/
+logs/*
+tests/__pycache__/
